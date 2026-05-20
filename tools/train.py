@@ -13,7 +13,10 @@ from tools.eval import do_evaluation
 from utils.misc import import_str
 from utils.backup import backup_project
 from utils.logging import MetricLogger, setup_logging
-from models.video_utils import render_images, save_videos
+from models.video_utils import (
+    render_images, save_videos,
+    expand_fov_for_training, crop_wide_outputs,
+)
 from datasets.driving_dataset import DrivingDataset
 
 logger = logging.getLogger()
@@ -184,6 +187,13 @@ def main(args):
     #     args=args,
     # )
 
+    # wide FOV training flag (used both for training step expansion & validation viz)
+    wide_fov_cfg_global = cfg.trainer.render.get("wide_fov_training", None)
+    wide_fov_enabled = (
+        wide_fov_cfg_global is not None
+        and wide_fov_cfg_global.get("enabled", False)
+    )
+
     for step in metric_logger.log_every(all_iters, cfg.logging.print_freq):
         #----------------------------------------------------------------------------
         #----------------------------     Validate     ------------------------------
@@ -206,6 +216,7 @@ def main(args):
                         vis_timestep * dataset.pixel_source.num_cams + i
                         for i in range(dataset.pixel_source.num_cams)
                     ],
+                    expand_fov=wide_fov_enabled,
                 )
             if args.enable_wandb:
                 wandb.log(
@@ -253,9 +264,25 @@ def main(args):
             if isinstance(v, torch.Tensor):
                 cam_infos[k] = v.cuda(non_blocking=True)
         
+        # ---- wide FOV training: optionally expand camera frustum ----
+        original_W = None
+        if wide_fov_enabled:
+            prob = wide_fov_cfg_global.get("prob", 1.0)
+            if prob >= 1.0 or random.random() < prob:
+                # Expand FOV: regenerates rays/pixel_coords for 2x width;
+                # GT tensors (pixels, masks, lidar_depth_map) are kept at
+                # original resolution for loss computation after cropping.
+                image_infos, cam_infos, original_W = expand_fov_for_training(
+                    image_infos, cam_infos
+                )
+        
         # forward & backward
         outputs = trainer(image_infos, cam_infos)
         trainer.update_visibility_filter()
+        
+        # ---- wide FOV training: crop outputs back to original width ----
+        if original_W is not None:
+            outputs = crop_wide_outputs(outputs, original_W)
 
         loss_dict = trainer.compute_losses(
             outputs=outputs,

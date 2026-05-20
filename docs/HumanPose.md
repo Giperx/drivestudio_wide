@@ -88,12 +88,12 @@ Supported datasets for human body pose extraction:
    **Waymo**
    ```bash
    conda activate 4D-humans
-
-   python datasets/tools/humanpose_process.py \
+   export PYTHONPATH=$(pwd)
+   CUDA_VISIBLE_DEVICES=1 python datasets/tools/humanpose_process.py \
    --dataset waymo \
-   --data_root data/waymo/processed/training \
-   --split_file data/waymo_example_scenes.txt \
-   [--save_temp] [--verbose]
+   --data_root data/waymo_flow/training/training \
+   --start_idx 400 \
+   --numbers_idx 398
    ```
 
    **PandaSet**

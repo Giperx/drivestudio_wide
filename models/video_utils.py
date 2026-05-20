@@ -11,6 +11,7 @@ from torch.nn import functional as F
 from skimage.metrics import structural_similarity as ssim
 
 from datasets.base import SplitWrapper
+from datasets.base.pixel_source import get_rays
 from models.trainers.base import BasicTrainer
 from utils.visualization import (
     to8b,
@@ -43,12 +44,109 @@ def compute_psnr(prediction: Tensor, target: Tensor) -> float:
     return (-10 * torch.log10(F.mse_loss(prediction, target))).item()
 
 
+def expand_fov_for_training(image_infos, cam_infos):
+    """
+    Expand horizontal FOV to 2x width by shifting the principal point
+    and regenerating rays for the widened image.
+    
+    Args:
+        image_infos: dict of image-related tensors (origins, viewdirs, pixel_coords, etc.)
+        cam_infos: dict of camera-related tensors (intrinsics, width, height, etc.)
+    
+    Returns:
+        (image_infos, cam_infos, original_W) where original_W is kept for later cropping
+    """
+    H = int(cam_infos["height"].item())
+    W = int(cam_infos["width"].item())
+    
+    # Modify intrinsics: shift cx by W/2 so the principal point is centered in the 2W-wide image
+    new_intrinsics = cam_infos["intrinsics"].clone()
+    new_intrinsics[..., 0, 2] += W / 2
+    
+    # Update width to 2x
+    new_W = W * 2
+    cam_infos["intrinsics"] = new_intrinsics
+    cam_infos["width"] = torch.tensor(
+        new_W, dtype=cam_infos["width"].dtype, device=cam_infos["width"].device
+    )
+    
+    device = new_intrinsics.device
+    
+    # Rebuild rays for new resolution [H, new_W]
+    x, y = torch.meshgrid(
+        torch.arange(new_W, device=device),
+        torch.arange(H, device=device),
+        indexing="xy",
+    )
+    origins, viewdirs, direction_norm = get_rays(
+        x.flatten(), y.flatten(),
+        cam_infos["camera_to_world"],
+        cam_infos["intrinsics"],
+    )
+    image_infos["origins"] = origins.reshape(H, new_W, 3)
+    image_infos["viewdirs"] = viewdirs.reshape(H, new_W, 3)
+    image_infos["direction_norm"] = direction_norm.reshape(H, new_W, 1)
+    
+    # Update pixel_coords (normalized coordinates for the new resolution)
+    image_infos["pixel_coords"] = torch.stack(
+        [y.float() / H, x.float() / new_W], dim=-1
+    ).reshape(H, new_W, 2)
+    
+    # Expand scalar-like spatial tensors to match the new width
+    for key in ["img_idx", "frame_idx", "normed_time"]:
+        if key in image_infos and image_infos[key].ndim >= 2:
+            val = image_infos[key].flatten()[0]
+            image_infos[key] = torch.full(
+                (H, new_W), val, dtype=image_infos[key].dtype, device=device
+            )
+    
+    return image_infos, cam_infos, W
+
+
+def crop_wide_outputs(outputs, original_W):
+    """Crop the center portion of wide-FOV outputs back to the original width.
+    
+    Given the intrinsics shift by W/2 (as in expand_fov_for_training),
+    the original image pixels correspond to horizontal indices [W//2, W//2 + W)
+    in the widened 2W-wide output.
+    
+    Args:
+        outputs: dict of tensors from trainer.forward()
+        original_W: the original image width before expansion
+    
+    Returns:
+        cropped outputs dict
+    """
+    start = original_W // 2
+    end = start + original_W
+    
+    cropped = {}
+    for k, v in outputs.items():
+        if isinstance(v, torch.Tensor) and v.ndim >= 2:
+            # Spatial tensors have shape [H, W, C] — crop W dim (dim=1)
+            if v.shape[1] > original_W:
+                if v.ndim == 2:
+                    cropped[k] = v[:, start:end]
+                elif v.ndim == 3:
+                    cropped[k] = v[:, start:end, :]
+                elif v.ndim == 4:
+                    cropped[k] = v[:, start:end, :, :]
+                else:
+                    cropped[k] = v  # unexpected ndim, keep as-is
+            else:
+                cropped[k] = v
+        else:
+            cropped[k] = v
+    return cropped
+
+
 def render_images(
     trainer: BasicTrainer,
     dataset: SplitWrapper,
     compute_metrics: bool = False,
     compute_error_map: bool = False,
-    vis_indices: Optional[List[int]] = None
+    vis_indices: Optional[List[int]] = None,
+    expand_fov: bool = False,
 ):
     """
     Render pixel-related outputs from a model.
@@ -64,7 +162,8 @@ def render_images(
         trainer=trainer,
         compute_metrics=compute_metrics,
         compute_error_map=compute_error_map,
-        vis_indices=vis_indices
+        vis_indices=vis_indices,
+        expand_fov=expand_fov,
     )
     if compute_metrics:
         num_samples = len(dataset) if vis_indices is None else len(vis_indices)
@@ -90,6 +189,7 @@ def render(
     compute_metrics: bool = False,
     compute_error_map: bool = False,
     vis_indices: Optional[List[int]] = None,
+    expand_fov: bool = False,
 ):
     """
     Renders a dataset utilizing a specified render function.
@@ -136,6 +236,14 @@ def render(
             for k, v in cam_infos.items():
                 if isinstance(v, Tensor):
                     cam_infos[k] = v.cuda(non_blocking=True)
+            
+            # ---- wide FOV expansion for visualization ----
+            original_W = None
+            if expand_fov:
+                image_infos, cam_infos, original_W = expand_fov_for_training(
+                    image_infos, cam_infos
+                )
+            
             # render the image
             results = trainer(image_infos, cam_infos)
             
@@ -227,6 +335,11 @@ def render(
                 mask = (depth_map.unsqueeze(-1) > 0).cpu().numpy()
                 lidar_on_image = image_infos["pixels"].cpu().numpy() * (1 - mask) + depth_img * mask
                 lidar_on_images.append(lidar_on_image)
+
+            # ---- wide FOV: crop back for metrics ----
+            if original_W is not None:
+                results = crop_wide_outputs(results, original_W)
+                rgb = results["rgb"]
 
             if compute_metrics:
                 psnr = compute_psnr(rgb, image_infos["pixels"])

@@ -164,7 +164,7 @@ CUDA_VISIBLE_DEVICES=1 python tools/train.py \
     --config_file configs/omnire.yaml \
     --output_root logs/omnire_nuscenes/ \
     --project omnire \
-    --run_name 3cams089bd2 \
+    --run_name 3cams690bd2 \
     dataset=nuscenes/3cams \
     data.scene_idx=89 \
     data.start_timestep=0 \
@@ -210,7 +210,7 @@ CUDA_VISIBLE_DEVICES=1 python tools/train.py \
 - For over 3 cameras or 450+ images, we recommend using `omnire_extended_cam.yaml`. It works better in practice.
 ### Evaluation
 ```shell
-CUDA_VISIBLE_DEVICES=1 python tools/eval.py --resume_from logs/omnire_nuscenes/omnire/6cams037fd2/checkpoint_final.pth
+CUDA_VISIBLE_DEVICES=1 python tools/eval.py --resume_from logs/omnire_nuscenes/omnire/3cams690bd2/checkpoint_final.pth
 ```
 
 <details>

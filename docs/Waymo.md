@@ -75,15 +75,25 @@ python datasets/preprocess.py \
 # conda activate Gendata
 # export CUDA_VISIBLE_DEVICES=-1
 # export PYTHONPATH=$(pwd)
-python datasets/preprocess.py \
+CUDA_VISIBLE_DEVICES=-1 python datasets/preprocess.py \
+    --data_root data/raw/waymo_scene_flow/waymo_valid \
+    --target_dir data/waymo_flow/validation \
+    --dataset waymo \
+    --split validation \
+    --start_idx 101  \
+    --num_scenes 101 \
+    --workers 2 \
+    --process_keys exposures images lidar calib pose dynamic_masks objects depth_map
+
+CUDA_VISIBLE_DEVICES=-1 python datasets/preprocess.py \
     --data_root data/raw/waymo_scene_flow/waymo_train \
     --target_dir data/waymo_flow/training \
     --dataset waymo \
     --split training \
     --start_idx 0  \
-    --num_scenes 1 \
-    --workers 1 \
-    --process_keys images lidar calib pose dynamic_masks objects depth_map
+    --num_scenes 798 \
+    --workers 2 \
+    --process_keys exposures images lidar calib pose dynamic_masks objects depth_map
 ```
 
 Alternatively, preprocess a batch of scenes by providing the split file:
@@ -144,6 +154,26 @@ If you encounter problems downloading the original SegFormer checkpoint from the
 #### Run Mask Extraction Script
 
 ```shell
+conda activate segformer
+segformer_path=/path/to/segformer
+split=mini
+export PYTHONPATH=$(pwd)
+CUDA_VISIBLE_DEVICES=0 python datasets/tools/extract_masks.py \
+    --data_root data/waymo_flow/training/training \
+    --segformer_path=./SegFormer \
+    --checkpoint=./SegFormer/segformer.b5.1024x1024.city.160k.pth \
+    --start_idx 244 \
+    --num_scenes 300 \
+    --process_dynamic_mask
+
+CUDA_VISIBLE_DEVICES=1 python datasets/tools/extract_masks.py \
+    --data_root data/waymo_flow/training/training \
+    --segformer_path=./SegFormer \
+    --checkpoint=./SegFormer/segformer.b5.1024x1024.city.160k.pth \
+    --start_idx 542 \
+    --num_scenes 598 \
+    --process_dynamic_mask
+
 conda activate segformer
 segformer_path=/pathtosegformer
 

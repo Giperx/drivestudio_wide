@@ -134,6 +134,18 @@ if __name__ == "__main__":
         help="number of scenes to be processed",
     )
     parser.add_argument(
+        "--numbers_idx",
+        type=int,
+        default=None,
+        help="number of scenes to process from training list (overrides --num_scenes when --training_list is set)",
+    )
+    parser.add_argument(
+        "--training_list",
+        type=str,
+        default="data/waymo_train_list.txt",
+        help="path to training list file containing scene names, one per line",
+    )
+    parser.add_argument(
         "--save_temp",
         action="store_true",
         help="Whether to save the intermediate results",
@@ -180,9 +192,15 @@ if __name__ == "__main__":
         scene_ids_list = args.scene_ids
     elif args.split_file is not None:
         scene_ids_list = parse_scene_ids_from_split(args.split_file, args.dataset)
+    elif args.training_list is not None and os.path.exists(args.training_list):
+        training_files = open(args.training_list).read().splitlines()
+        training_files = [f.strip() for f in training_files if f.strip()]
+        num = args.numbers_idx if args.numbers_idx is not None else args.num_scenes
+        scene_ids_list = list(range(args.start_idx, args.start_idx + num))
+        logger.info(f"Using training list: {len(scene_ids_list)} scenes [{args.start_idx}:{args.start_idx + num}]")
     else:
         scene_ids_list = np.arange(args.start_idx, args.start_idx + args.num_scenes)
-    
+
     for scene_id in scene_ids_list:
         try:
             scene_dir = f'{args.data_root}/{str(scene_id).zfill(3)}'

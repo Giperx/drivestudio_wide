@@ -16,6 +16,9 @@ trainer:
     absgrad: true # whether to use absolute gradient for rendering, supported by gsplat kernel
     sparse_grad: false # whether to use sparse gradient for rendering, supported by gsplat kernel
     batch_size: 1 # batch size for rendering, currently only support 1
+    wide_fov_training:
+      enabled: true  # whether to render 2x wider FOV during training and crop center for loss
+      prob: 1.0       # probability of applying wide FOV per training step (1.0 = always, 0.3 = 30% chance)
   losses:
     rgb:
       w: 0.8

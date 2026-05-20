@@ -118,7 +118,8 @@ class WaymoProcessor(object):
         self.save_dir = f"{save_dir}/{prefix}"
         self.workers = int(workers)
         # a list of tfrecord pathnames
-        training_files = open("data/waymo_train_list.txt").read().splitlines()
+        list_file = f"data/waymo_{'train' if prefix == 'training' else 'valid'}_list.txt"
+        training_files = open(list_file).read().splitlines()
         self.tfrecord_pathnames = [
             f"{self.load_dir}/{f}.tfrecord" for f in training_files
         ]
@@ -144,6 +145,7 @@ class WaymoProcessor(object):
         pathname = self.tfrecord_pathnames[file_idx]
         dataset = tf.data.TFRecordDataset(pathname, compression_type="")
         num_frames = sum(1 for _ in dataset)
+        self._exposure_data = {}  # {frame_idx: {cam_id: {shutter, gain}}}
         for frame_idx, data in enumerate(
             tqdm(dataset, desc=f"File {file_idx}", total=num_frames, dynamic_ncols=True)
         ):
@@ -156,6 +158,8 @@ class WaymoProcessor(object):
                 continue
             if "images" in self.process_keys:
                 self.save_image(frame, file_idx, frame_idx)
+            if "exposures" in self.process_keys:
+                self._collect_exposure(frame, frame_idx)
             if "calib" in self.process_keys:
                 self.save_calib(frame, file_idx, frame_idx)
             if "lidar" in self.process_keys:
@@ -170,6 +174,10 @@ class WaymoProcessor(object):
                 self.save_dynamic_mask(frame, file_idx, frame_idx, class_valid='vehicle')                
             if frame_idx == 0:
                 self.save_interested_labels(frame, file_idx)
+        if "exposures" in self.process_keys and self._exposure_data:
+            exposure_dir = f"{self.save_dir}/{str(file_idx).zfill(3)}"
+            with open(f"{exposure_dir}/exposure_info.json", "w") as fp:
+                json.dump(self._exposure_data, fp, indent=2)
         if "objects" in self.process_keys:
             instances_info, frame_instances = self.save_objects(dataset)
             
@@ -228,6 +236,22 @@ class WaymoProcessor(object):
             )
             with open(img_path, "wb") as fp:
                 fp.write(img.image)
+
+    def _collect_exposure(self, frame, frame_idx):
+        """Collect exposure parameters (shutter, gain) for each camera in a frame.
+
+        Args:
+            frame (:obj:`Frame`): Open dataset frame proto.
+            frame_idx (int): Current frame index.
+        """
+        frame_exposure = {}
+        for img in frame.images:
+            cam_id = str(img.name - 1)  # match saved image naming convention
+            frame_exposure[cam_id] = {
+                "shutter": float(getattr(img, "shutter", 0.0)),
+                "gain": float(getattr(img, "gain", 1.0)),
+            }
+        self._exposure_data[str(frame_idx)] = frame_exposure
 
     def save_calib(self, frame, file_idx, frame_idx):
         """Parse and save the calibration data.
