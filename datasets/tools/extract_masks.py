@@ -44,6 +44,10 @@ dataset_classes_in_sematic = {
     'human': [11, 12, 17, 18], # 'person', 'rider', 'motorcycle', 'bicycle'
 }
 
+# SegFormer (Cityscapes) 无法识别的类别，将直接从dynamic_masks复制
+# 这些类别包括: animal, other_vehicle, emergency_vehicle 等
+SKIP_SEGFORMER_CATEGORIES = ['other_dynamics']
+
 if __name__ == "__main__":
     import os
     import imageio
@@ -128,7 +132,7 @@ if __name__ == "__main__":
         if args.process_dynamic_mask:
             rough_human_mask_dir = os.path.join(args.data_root, scene_id, "dynamic_masks", "human")
             rough_vehicle_mask_dir = os.path.join(args.data_root, scene_id, "dynamic_masks", "vehicle")
-            
+
             all_mask_dir = os.path.join(args.data_root, scene_id, "fine_dynamic_masks", "all")
             if not os.path.exists(all_mask_dir):
                 os.makedirs(all_mask_dir)
@@ -138,6 +142,17 @@ if __name__ == "__main__":
             vehicle_mask_dir = os.path.join(args.data_root, scene_id, "fine_dynamic_masks", "vehicle")
             if not os.path.exists(vehicle_mask_dir):
                 os.makedirs(vehicle_mask_dir)
+
+            # For categories that SegFormer cannot识别 (e.g., other_dynamics),
+            # directly copy from dynamic_masks to fine_dynamic_masks
+            skip_category_dirs = {}
+            for skip_cat in SKIP_SEGFORMER_CATEGORIES:
+                rough_dir = os.path.join(args.data_root, scene_id, "dynamic_masks", skip_cat)
+                fine_dir = os.path.join(args.data_root, scene_id, "fine_dynamic_masks", skip_cat)
+                if os.path.exists(rough_dir):
+                    if not os.path.exists(fine_dir):
+                        os.makedirs(fine_dir)
+                    skip_category_dirs[skip_cat] = (rough_dir, fine_dir)
         
         flist = sorted(glob(os.path.join(img_dir, '*')))
         for fpath in tqdm(flist, f'scene[{scene_id}]'):
@@ -164,20 +179,32 @@ if __name__ == "__main__":
             imageio.imwrite(os.path.join(sky_mask_dir, f"{fbase}.png"), sky_mask.astype(np.uint8)*255)
             
             if args.process_dynamic_mask:
-                # save human masks
+                # save human masks (with SegFormer refinement)
                 rough_human_mask_path = os.path.join(rough_human_mask_dir, f"{fbase}.png")
                 rough_human_mask = (imageio.imread(rough_human_mask_path) > 0)
                 huamn_mask = np.isin(mask, dataset_classes_in_sematic['human'])
                 valid_human_mask = np.logical_and(huamn_mask, rough_human_mask)
                 imageio.imwrite(os.path.join(human_mask_dir, f"{fbase}.png"), valid_human_mask.astype(np.uint8)*255)
-                
-                # save vehicle mask
+
+                # save vehicle mask (with SegFormer refinement)
                 rough_vehicle_mask_path = os.path.join(rough_vehicle_mask_dir, f"{fbase}.png")
                 rough_vehicle_mask = (imageio.imread(rough_vehicle_mask_path) > 0)
                 vehicle_mask = np.isin(mask, dataset_classes_in_sematic['Vehicle'])
                 valid_vehicle_mask = np.logical_and(vehicle_mask, rough_vehicle_mask)
                 imageio.imwrite(os.path.join(vehicle_mask_dir, f"{fbase}.png"), valid_vehicle_mask.astype(np.uint8)*255)
-                
-                # save dynamic mask
+
+                # For skip categories (e.g., other_dynamics), directly copy from dynamic_masks
+                # because SegFormer cannot recognize these categories (like animal)
+                valid_skip_masks = []
+                for skip_cat, (rough_dir, fine_dir) in skip_category_dirs.items():
+                    rough_mask_path = os.path.join(rough_dir, f"{fbase}.png")
+                    if os.path.exists(rough_mask_path):
+                        skip_mask = (imageio.imread(rough_mask_path) > 0)
+                        imageio.imwrite(os.path.join(fine_dir, f"{fbase}.png"), skip_mask.astype(np.uint8)*255)
+                        valid_skip_masks.append(skip_mask)
+
+                # save dynamic mask (combine all)
                 valid_all_mask = np.logical_or(valid_human_mask, valid_vehicle_mask)
+                for skip_mask in valid_skip_masks:
+                    valid_all_mask = np.logical_or(valid_all_mask, skip_mask)
                 imageio.imwrite(os.path.join(all_mask_dir, f"{fbase}.png"), valid_all_mask.astype(np.uint8)*255)

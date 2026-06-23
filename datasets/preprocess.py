@@ -1,4 +1,5 @@
 import argparse
+import os
 import numpy as np
 
 if __name__ == "__main__":
@@ -244,8 +245,30 @@ if __name__ == "__main__":
             process_id_list=scene_ids_list,
             workers=args.workers,
         )
+    elif args.dataset == "lyft":
+        from datasets.lyft.lyft_preprocess import LyftProcessor
+
+        # 对于lyft，split_file是必须的，包含scene名称
+        if args.split_file is None:
+            parser.error("Lyft dataset requires --split_file argument")
+
+        # 读取scene名称列表
+        with open(args.split_file, 'r') as f:
+            scene_names = [line.strip() for line in f if line.strip()]
+
+        # 从split文件名提取split名称 (如 train1224, val1920)
+        split_name = os.path.splitext(os.path.basename(args.split_file))[0]
+
+        dataset_processor = LyftProcessor(
+            load_dir=args.data_root,
+            save_dir=args.target_dir,
+            split_name=split_name,
+            scene_names=scene_names,
+            process_keys=args.process_keys,
+            workers=args.workers,
+        )
     else:
-        raise ValueError(f"Unknown dataset {args.dataset}, please choose from waymo, pandaset, argoverse, nuscenes, kitti, nuplan")
+        raise ValueError(f"Unknown dataset {args.dataset}, please choose from waymo, pandaset, argoverse, nuscenes, kitti, nuplan, lyft")
 
     if args.scene_ids is not None and args.workers == 1:
         for scene_id in args.scene_ids:

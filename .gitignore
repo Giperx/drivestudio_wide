@@ -211,3 +211,5 @@ cal*.py
 *.png
 *.txt
 plan/
+data/ddad_process
+data/lyft
