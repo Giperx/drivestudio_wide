@@ -35,9 +35,9 @@ python datasets/preprocess.py \
     --target_dir data/nuscenes/processed \
     --dataset nuscenes \
     --split v1.0-trainval \
-    --start_idx 704 \
+    --start_idx 037 \
     --num_scenes 1 \
-    --interpolate_N 4 \
+    --interpolate_N 0 \
     --workers 1 \
     --process_keys cam2ego_extrinsics ego_pose depth_map images lidar calib dynamic_masks objects 
 ```

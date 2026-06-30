@@ -199,7 +199,7 @@ SegFormer
 third_party/
 data/basicModel_neutral_lbs_10_207_0_v1.0.0.pkl
 vis_results/
-vis_depth.py
+vis_depth*.py
 
 tmp_*.py
 tmp*/
@@ -213,3 +213,7 @@ cal*.py
 plan/
 data/ddad_process
 data/lyft
+
+SurroundOcc/
+Occ3D/
+tmp*.md
