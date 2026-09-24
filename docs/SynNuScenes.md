@@ -114,3 +114,25 @@ data/syn_nuscenes/processed_10Hz/trainval/000/
 - `load_smpl: False`
 
 加载器仍是 `NuScenesPixelSource` / `NuScenesLiDARSource`。官方数据用相机 0 做世界对齐；这里没有相机 0，会改用该帧已导出外参里编号最小的相机。没有 `instances_info.json` 时会建成空 instance，后续动态节点为空。
+
+## 7. Wide GT
+
+相机 2（`CAM_BACK_WIDE_RECT_GT`，5760×1080）是全像素 GT，不生成 mask。`tools/export_syn_nuscenes_wide_gt.py` 把它 resize 成和 nuScenes / Lyft wide 图相同的两档尺寸，文件名沿用 `{帧}_{5}_wide.png`。`5` 是这套 wide 图的固定槽位，不是源相机编号。
+
+```shell
+python tools/export_syn_nuscenes_wide_gt.py \
+    --processed_dir data/syn_nuscenes/processed_10Hz/trainval \
+    --output_root data/syn_nuscenes
+```
+
+默认尺寸是 `1554x294` 和 `1344x252`（宽×高）。`1344x252` 与原图 16:3 一致；`1554x294` 与现有 sparse wide 图的像素尺寸一致，直接缩放，不裁剪。
+
+```text
+data/syn_nuscenes/
+  ├── syn_nuscenes_wide_gt_1554x294/
+  │    └── 000/rgb/000_5_wide.png
+  └── syn_nuscenes_wide_gt_1344x252/
+       └── 000/rgb/000_5_wide.png
+```
+
+这两个目录在 `data/syn_nuscenes/` 下，已被 gitignore 覆盖。新场景跑完预处理后，同一条命令会按场景编号再导出一份。
