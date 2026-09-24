@@ -1,0 +1,39 @@
+# syn-nuScenes (CARLA) configuration
+# Processed cameras:
+#   idx    camera                    original size    depth
+#    2    CAM_BACK_WIDE_RECT_GT      (1080, 5760)     no
+#    3    CAM_BACK_LEFT_SOURCE       (1080, 1920)     yes
+#    4    CAM_BACK_RIGHT_SOURCE      (1080, 1920)     yes
+#    5    CAM_BACK_SOURCE            (1080, 1920)     yes
+# Static scene: no dynamic masks, no object boxes.
+
+data:
+  data_root: data/syn_nuscenes/processed_10Hz/trainval
+  dataset: syn_nuscenes
+  scene_idx: 0
+  start_timestep: 0
+  end_timestep: -1
+  preload_device: cuda
+  pixel_source:
+    type: datasets.nuscenes.nuscenes_sourceloader.NuScenesPixelSource
+    cameras: [5, 4, 3, 2]
+    train448: False
+    downscale_when_loading: [2, 2, 2, 2]
+    downscale: 1
+    undistort: False
+    test_image_stride: 0
+    load_sky_mask: False
+    load_dynamic_mask: False
+    # No boxes are exported. The loader builds empty instance tensors so
+    # RigidNodes / DeformableNodes / SMPLNodes initialize as empty.
+    load_objects: True
+    load_smpl: False
+    sampler:
+      buffer_downscale: 8
+      buffer_ratio: 0.5
+      start_enhance_weight: 3
+  lidar_source:
+    type: datasets.nuscenes.nuscenes_sourceloader.NuScenesLiDARSource
+    load_lidar: True
+    lidar_downsample_factor: 4
+    lidar_percentile: 0.02

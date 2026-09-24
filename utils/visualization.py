@@ -30,6 +30,8 @@ def get_layout(dataset_type: str):
         layout = layout_argoverse
     elif dataset_type == "nuscenes":
         layout = layout_nuscenes
+    elif dataset_type == "syn_nuscenes":
+        layout = layout_syn_nuscenes
     elif dataset_type == "kitti":
         layout = layout_kitti
     elif dataset_type == "nuplan":
@@ -187,6 +189,56 @@ def layout_nuscenes(
     min_x, max_x = np.where(filled_mask)[1].min(), np.where(filled_mask)[1].max()
     tiled_img = tiled_img[min_y : max_y + 1, min_x : max_x + 1]
     return tiled_img
+
+def layout_syn_nuscenes(
+    imgs: List[np.array], cam_names: List[str]
+) -> np.array:
+    """Tile syn-nuScenes cameras.
+
+    Top row is the three 60-deg source cameras. The wide rectified view is
+    resized onto the full width of the second row. Source cameras do not all
+    have to be present.
+    """
+    by_name = {name: img for name, img in zip(cam_names, imgs)}
+    source_names = ("CAM_BACK_LEFT_SOURCE", "CAM_BACK_SOURCE", "CAM_BACK_RIGHT_SOURCE")
+    unit = None
+    for name in ("CAM_BACK_SOURCE", "CAM_BACK_LEFT_SOURCE", "CAM_BACK_RIGHT_SOURCE"):
+        if name in by_name:
+            unit = by_name[name]
+            break
+    if unit is None:
+        if "CAM_BACK_WIDE_RECT_GT" in by_name and not any(name in by_name for name in source_names):
+            wide = by_name["CAM_BACK_WIDE_RECT_GT"]
+            return np.asarray(wide, dtype=np.float32)
+        unit = imgs[0]
+    unit_h, unit_w = unit.shape[:2]
+    channel = imgs[0].shape[-1]
+    canvas_h = unit_h * 2
+    canvas_w = unit_w * 3
+    tiled_img = np.zeros((canvas_h, canvas_w, channel), dtype=np.float32)
+    filled_mask = np.zeros((canvas_h, canvas_w), dtype=np.uint8)
+
+    def place(img, y, x, height, width):
+        if img.shape[0] != height or img.shape[1] != width:
+            img = cv2.resize(img, (width, height), interpolation=cv2.INTER_AREA)
+        tiled_img[y:y + height, x:x + width] = img
+        filled_mask[y:y + height, x:x + width] = 1
+
+    slots = {
+        "CAM_BACK_LEFT_SOURCE": (0, 0, unit_h, unit_w),
+        "CAM_BACK_SOURCE": (0, unit_w, unit_h, unit_w),
+        "CAM_BACK_RIGHT_SOURCE": (0, 2 * unit_w, unit_h, unit_w),
+        "CAM_BACK_WIDE_RECT_GT": (unit_h, 0, unit_h, canvas_w),
+    }
+    for name, (y, x, height, width) in slots.items():
+        if name in by_name:
+            place(by_name[name], y, x, height, width)
+
+    if filled_mask.sum() == 0:
+        return tiled_img
+    min_y, max_y = np.where(filled_mask)[0].min(), np.where(filled_mask)[0].max()
+    min_x, max_x = np.where(filled_mask)[1].min(), np.where(filled_mask)[1].max()
+    return tiled_img[min_y:max_y + 1, min_x:max_x + 1]
 
 def layout_pandaset(
     imgs: List[np.array], cam_names: List[str]

@@ -5,7 +5,7 @@ batch_merge_depthmap_nuscenes.py — 批量处理 nuScenes 的 depth map 多帧�
 使用各相机的 depth map 反投影得到点云（而非 lidar bin），通过 extrinsics 变换。
 只保存指定相机的深度图 npz，不保存可视化。
 
-用法：直接修改下方全局变量，然后 python batch_merge_depthmap_nuscenes.py
+用法：直接修改下方全局变量，然后 python tools/batch_merge_depthmap_nuscenes.py
 
 输出：
     {OUT_DIR}/{scene}/depth_map/{frame:03d}_{cam_id}.npz
@@ -25,16 +25,16 @@ from tqdm import tqdm
 # ╚══════════════════════════════════════════════════════════════════════╝
 
 DATA_ROOT   = 'data/nuscenes/processed_10Hz/trainval'
-SCENE_LIST = './nuScenes_Val2.txt'
+SCENE_LIST = './nuScenes_Train7.txt'
 OUT_DIR     = 'data/nuscenes/processed_10Hz/trainval_multi_depthmap'
 CAM_LIST    = [5, 4, 3, 2, 1, 0]    # 用于构建体素网格的相机列表
-RENDER_CAM_LIST = [5]                # 只保存这些相机的深度图
+RENDER_CAM_LIST = [5,4,3]                # 只保存这些相机的深度图
 N_BEFORE    = 8                      # 向前合并帧数上限
 N_AFTER     = 8                      # 向后合并帧数上限
 FILTER_ALL  = False
 SELF_RANGE_DEPTH = 1.5               # depth map 深度过滤阈值 (m)
-START_FRAME = 18                      # 从第几帧开始处理
-
+START_FRAME = 0                      # 从第几帧开始处理
+DEPTH_MAX  = 120.0                  
 # 体素参数
 VOXEL_SIZE  = 0.15
 VOXEL_ALL   = False
@@ -92,8 +92,7 @@ def get_all_frame_indices(scene_dir):
 # 核心计算
 # ──────────────────────────────────────────────────────────────────────
 
-def depth_to_camera_points(depth_map, K):
-    K_inv = np.linalg.inv(K)
+def depth_to_camera_points(depth_map, K_inv):
     H, W = depth_map.shape
     v_coords, u_coords = np.where(depth_map > SELF_RANGE_DEPTH)
     depths = depth_map[v_coords, u_coords]
@@ -116,27 +115,41 @@ def world_to_camera(points, c2w):
     return np.concatenate([xyz, points[:, 3:]], axis=1)
 
 
-def filter_dynamic_objects(points_world, instances_info, frame_instances, frame_idx):
-    frame_key = str(frame_idx)
-    if frame_key not in frame_instances:
+def precompute_bboxes(instances_info, frame_instances, all_indices):
+    """预计算所有帧的 bbox 中心和半尺寸，避免重复 JSON 查找"""
+    bbox_cache = {}  # {frame_idx: (centers [M,3], half_sizes [M,3])}
+    for f_idx in all_indices:
+        frame_key = str(f_idx)
+        if frame_key not in frame_instances or not frame_instances[frame_key]:
+            continue
+        centers, halves = [], []
+        for inst_id in frame_instances[frame_key]:
+            inst_key = str(inst_id)
+            if inst_key not in instances_info:
+                continue
+            inst = instances_info[inst_key]
+            fi_list = inst['frame_annotations']['frame_idx']
+            if f_idx not in fi_list:
+                continue
+            fi = fi_list.index(f_idx)
+            center = np.array(inst['frame_annotations']['obj_to_world'][fi])[:3, 3]
+            half = np.array(inst['frame_annotations']['box_size'][fi]) * BBOX_EXPAND / 2.0
+            centers.append(center)
+            halves.append(half)
+        if centers:
+            bbox_cache[f_idx] = (np.array(centers), np.array(halves))
+    return bbox_cache
+
+
+def filter_dynamic_objects(points_world, bbox_cache, frame_idx):
+    """Python 循环过滤（bbox 已预计算，无 JSON 查找开销）"""
+    if frame_idx not in bbox_cache:
         return np.ones(len(points_world), dtype=bool)
-    ids = frame_instances[frame_key]
-    if not ids:
-        return np.ones(len(points_world), dtype=bool)
+    centers, halves = bbox_cache[frame_idx]
     pts = points_world[:, :3]
     mask = np.ones(len(pts), dtype=bool)
-    for inst_id in ids:
-        inst_key = str(inst_id)
-        if inst_key not in instances_info:
-            continue
-        inst = instances_info[inst_key]
-        fi_list = inst['frame_annotations']['frame_idx']
-        if frame_idx not in fi_list:
-            continue
-        fi = fi_list.index(frame_idx)
-        center = np.array(inst['frame_annotations']['obj_to_world'][fi])[:3, 3].copy()
-        half = np.array(inst['frame_annotations']['box_size'][fi]) * BBOX_EXPAND / 2.0
-        mask &= ~np.all(np.abs(pts - center) < half, axis=1)
+    for j in range(len(centers)):
+        mask &= ~np.all(np.abs(pts - centers[j]) < halves[j], axis=1)
     return mask
 
 
@@ -175,7 +188,13 @@ class VoxelOccupancyGrid:
         self._build_scene()
 
     def add_bboxes(self, bboxes):
+        from scipy.ndimage import maximum_filter
         grid_before = self.grid.copy()
+
+        # 记录所有 bbox 的联合范围（用于局部膨胀）
+        all_idx_min = np.array(self.grid_shape)
+        all_idx_max = np.zeros(3, dtype=np.int32)
+
         for bbox in bboxes:
             center = bbox[:3]
             half = bbox[3:6] / 2.0
@@ -187,11 +206,27 @@ class VoxelOccupancyGrid:
             self.grid[idx_min[0]:idx_max[0]+1,
                       idx_min[1]:idx_max[1]+1,
                       idx_min[2]:idx_max[2]+1] = 1
+            all_idx_min = np.minimum(all_idx_min, idx_min)
+            all_idx_max = np.maximum(all_idx_max, idx_max)
+
         if BBOX_DILATE:
-            from scipy.ndimage import maximum_filter
-            bbox_only = (self.grid > 0) & (grid_before == 0)
-            bbox_dilated = maximum_filter(bbox_only.astype(np.uint8), size=MAXMUM_FILTER_SIZE).astype(np.uint8)
-            self.grid = np.maximum(self.grid, bbox_dilated)
+            # 局部膨胀：只在 bbox 联合区域 + margin 内做 maximum_filter
+            margin = MAXMUM_FILTER_SIZE
+            pad_min = np.maximum(all_idx_min - margin, 0)
+            pad_max = np.minimum(all_idx_max + margin, np.array(self.grid_shape) - 1)
+
+            sub = self.grid[pad_min[0]:pad_max[0]+1,
+                            pad_min[1]:pad_max[1]+1,
+                            pad_min[2]:pad_max[2]+1].copy()
+            sub_before = grid_before[pad_min[0]:pad_max[0]+1,
+                                     pad_min[1]:pad_max[1]+1,
+                                     pad_min[2]:pad_max[2]+1]
+            sub_new = (sub > 0) & (sub_before == 0)
+            sub_dilated = maximum_filter(sub_new.astype(np.uint8), size=MAXMUM_FILTER_SIZE).astype(np.uint8)
+            self.grid[pad_min[0]:pad_max[0]+1,
+                      pad_min[1]:pad_max[1]+1,
+                      pad_min[2]:pad_max[2]+1] = np.maximum(sub, sub_dilated)
+
         self._build_scene()
 
     def _build_scene(self):
@@ -244,46 +279,43 @@ def filter_occluded_by_voxels(voxel_grid, points_cam, cam2world, max_dist=100.0)
 # 辅助：加载某帧某相机的 depth map → 世界坐标点云
 # ──────────────────────────────────────────────────────────────────────
 
-def load_frame_cam_to_world(scene_dir, frame_idx, cam_id):
-    dm_path = os.path.join(scene_dir, 'depth_map', f'{frame_idx:03d}_{cam_id}.npz')
-    if not os.path.exists(dm_path):
-        return None
-    depth = load_depth_map(dm_path)
-    K = load_intrinsics(os.path.join(scene_dir, 'intrinsics', f'{cam_id}.txt'))
-    c2w = load_txt_matrix(os.path.join(scene_dir, 'extrinsics', f'{frame_idx:03d}_{cam_id}.txt'))
-    cam_pts = depth_to_camera_points(depth, K)
-    world_pts = camera_to_world(cam_pts, c2w)
-    return world_pts
-
 
 # ──────────────────────────────────────────────────────────────────────
-# 处理单帧
+# 处理单帧：体素构建一次 + 逐相机投影
 # ──────────────────────────────────────────────────────────────────────
 
-def process_single_frame(scene_dir, target_frame, all_indices, instances_info, frame_instances, cam_id, K, H, W):
-    """处理单帧，返回 depth map [H, W] 或 None"""
+def build_voxel_grid_for_frame(target_frame, all_indices, bbox_cache,
+                               cam_extrinsics, world_pts_all):
+    """
+    构建体素网格 + 缓存补充帧过滤后的世界坐标点云
+
+    返回: (voxel_grid, supp_frames, supp_filtered_cache)
+        supp_filtered_cache: {(frame, cam_id): filtered_world_pts [N, 4]}
+    """
     t0 = time.time()
-
     frame_start = max(0, target_frame - N_BEFORE)
     frame_end = min(all_indices[-1] + 1, target_frame + N_AFTER + 1)
     supp_frames = [f for f in range(frame_start, frame_end) if f != target_frame]
-
-    # ── 构建体素网格（使用 CAM_LIST 所有相机的 depth map）──
     voxel_frame_indices = supp_frames + [target_frame] if not VOXEL_ALL else all_indices
 
     voxel_world_list = []
+    supp_filtered_cache = {}  # 缓存：补充帧过滤后的世界坐标（供投影复用）
+
     for f in voxel_frame_indices:
         for cid in CAM_LIST:
-            world_pts = load_frame_cam_to_world(scene_dir, f, cid)
-            if world_pts is None:
+            if (f, cid) not in world_pts_all:
                 continue
+            world_pts = world_pts_all[(f, cid)]
             if f != target_frame or not MERGE_TARGET:
-                dyn_mask = filter_dynamic_objects(world_pts, instances_info, frame_instances, f)
+                dyn_mask = filter_dynamic_objects(world_pts, bbox_cache, f)
                 world_pts = world_pts[dyn_mask]
+                # 缓存补充帧中 render 相机的过滤结果
+                if f in supp_frames and cid in RENDER_CAM_LIST:
+                    supp_filtered_cache[(f, cid)] = world_pts
             voxel_world_list.append(world_pts[:, :3])
 
     if not voxel_world_list:
-        return None
+        return None, supp_frames, {}
 
     voxel_all_points = np.concatenate(voxel_world_list, axis=0)
     t1 = time.time()
@@ -291,52 +323,44 @@ def process_single_frame(scene_dir, target_frame, all_indices, instances_info, f
     voxel_grid = VoxelOccupancyGrid(voxel_all_points, voxel_size=VOXEL_SIZE)
     t2 = time.time()
 
-    # bbox 填充
-    if BBOX_VOXEL:
-        frame_key = str(target_frame)
-        if frame_key in frame_instances:
-            bboxes = []
-            for inst_id in frame_instances[frame_key]:
-                inst_key = str(inst_id)
-                if inst_key not in instances_info:
-                    continue
-                inst = instances_info[inst_key]
-                fi_list = inst['frame_annotations']['frame_idx']
-                if target_frame not in fi_list:
-                    continue
-                fi = fi_list.index(target_frame)
-                box_size = np.array(inst['frame_annotations']['box_size'][fi]) * BBOX_EXPAND
-                obj2world = np.array(inst['frame_annotations']['obj_to_world'][fi])
-                center = obj2world[:3, 3]
-                bboxes.append(np.concatenate([center, box_size]))
-            if bboxes:
-                voxel_grid.add_bboxes(np.array(bboxes))
+    if BBOX_VOXEL and target_frame in bbox_cache:
+        centers, halves = bbox_cache[target_frame]
+        bboxes = np.concatenate([centers, halves * 2.0], axis=1)
+        voxel_grid.add_bboxes(bboxes)
+    t3 = time.time()
 
-    # ── 加载目标帧 c2w ──
-    c2w = load_txt_matrix(os.path.join(scene_dir, 'extrinsics', f'{target_frame:03d}_{cam_id}.txt'))
+    # print(f'    帧{target_frame:03d} 体素构建: 加载{t1-t0:.1f}s 网格{t2-t1:.1f}s bbox{t3-t2:.1f}s')
+    return voxel_grid, supp_frames, supp_filtered_cache
 
-    # ── 补充帧：遮挡过滤 ──
+
+def project_for_camera(voxel_grid, supp_frames, target_frame, cam_id,
+                       supp_filtered_cache, cam_intrinsics, cam_extrinsics, world_pts_all, H, W):
+    """单相机投影：遮挡过滤 + 生成深度图（使用缓存，避免重复过滤）"""
+    t0 = time.time()
+    c2w = cam_extrinsics[target_frame][cam_id]
+
+    # 补充帧：从缓存读取过滤后的世界坐标，直接变换到相机坐标
     supp_cam_list = []
     for f in supp_frames:
-        world_pts = load_frame_cam_to_world(scene_dir, f, cam_id)
-        if world_pts is None:
+        if (f, cam_id) in supp_filtered_cache:
+            world_pts = supp_filtered_cache[(f, cam_id)]
+        elif (f, cam_id) in world_pts_all:
+            world_pts = world_pts_all[(f, cam_id)]
+        else:
             continue
-        dyn_mask = filter_dynamic_objects(world_pts, instances_info, frame_instances, f)
-        world_pts = world_pts[dyn_mask]
-        cam_pts = world_to_camera(world_pts, c2w)
-        supp_cam_list.append(cam_pts)
+        supp_cam_list.append(world_to_camera(world_pts, c2w))
 
     supp_cam = np.concatenate(supp_cam_list, axis=0) if supp_cam_list else np.empty((0, 4))
-    t3 = time.time()
-    supp_visible = filter_occluded_by_voxels(voxel_grid, supp_cam, c2w)
-    supp_filtered = supp_cam[supp_visible]
-    t4 = time.time()
+    t1 = time.time()
 
-    # ── 合并目标帧 + 补充帧 ──
+    supp_visible = filter_occluded_by_voxels(voxel_grid, supp_cam, c2w, DEPTH_MAX)
+    supp_filtered = supp_cam[supp_visible]
+    t2 = time.time()
+
+    # 合并目标帧 + 补充帧
     if MERGE_TARGET:
-        target_world_pts = load_frame_cam_to_world(scene_dir, target_frame, cam_id)
-        if target_world_pts is not None:
-            target_cam = world_to_camera(target_world_pts, c2w)
+        if (target_frame, cam_id) in world_pts_all:
+            target_cam = world_to_camera(world_pts_all[(target_frame, cam_id)], c2w)
         else:
             target_cam = np.empty((0, 4))
         vis_cam = np.concatenate([target_cam, supp_filtered], axis=0)
@@ -346,10 +370,9 @@ def process_single_frame(scene_dir, target_frame, all_indices, instances_info, f
     if len(vis_cam) == 0:
         return np.zeros((H, W), dtype=np.float32)
 
-    depth_map = points_to_depth_map(vis_cam, K, W, H)
-    t5 = time.time()
-    # print(f'    帧{target_frame:03d}_cam{cam_id}: 体素{t2-t1:.1f}s 补充帧{t3-t2:.1f}s '
-    #       f'过滤{t4-t3:.1f}s 投影{t5-t4:.1f}s 合计{t5-t0:.1f}s')
+    depth_map = points_to_depth_map(vis_cam, cam_intrinsics[cam_id]['K'], W, H)
+    t3 = time.time()
+    # print(f'    帧{target_frame:03d}_cam{cam_id}: 补充帧{t1-t0:.1f}s 过滤{t2-t1:.1f}s 投影{t3-t2:.1f}s')
     return depth_map
 
 
@@ -386,40 +409,79 @@ def main():
         instances_info = load_instances(instances_dir)
         frame_instances = load_frame_instances(instances_dir)
 
-        # 预加载每个相机的 intrinsics 和图像尺寸
-        cam_params = {}
-        for cam_id in RENDER_CAM_LIST:
+        # ── 预计算所有帧的 bbox（向量化过滤用）──
+        bbox_cache = precompute_bboxes(instances_info, frame_instances, all_indices)
+        print(f'[INFO] 预计算 bbox: {len(bbox_cache)} 帧')
+
+        # ── 预加载所有相机的 intrinsics（一次性）──
+        cam_intrinsics = {}
+        for cam_id in CAM_LIST:
             K = load_intrinsics(os.path.join(scene_dir, 'intrinsics', f'{cam_id}.txt'))
-            ref_dm = os.path.join(scene_dir, 'depth_map', f'{all_indices[0]:03d}_{cam_id}.npz')
-            if os.path.exists(ref_dm):
-                H, W = np.load(ref_dm)['depth'].shape
-            else:
-                H, W = 900, 1600
-            cam_params[cam_id] = {'K': K, 'H': H, 'W': W}
+            cam_intrinsics[cam_id] = {'K': K, 'K_inv': np.linalg.inv(K)}
+
+        # 获取图像尺寸（从第一个 RENDER_CAM 的 depth map）
+        ref_dm = os.path.join(scene_dir, 'depth_map', f'{all_indices[0]:03d}_{RENDER_CAM_LIST[0]}.npz')
+        if os.path.exists(ref_dm):
+            H, W = np.load(ref_dm)['depth'].shape
+        else:
+            H, W = 900, 1600
+
+        # ── 预加载所有帧所有相机的 extrinsics（一次性，很小 ~4KB/文件）──
+        cam_extrinsics = {}
+        for f_idx in all_indices:
+            cam_extrinsics[f_idx] = {}
+            for cam_id in CAM_LIST:
+                ext_path = os.path.join(scene_dir, 'extrinsics', f'{f_idx:03d}_{cam_id}.txt')
+                if os.path.exists(ext_path):
+                    cam_extrinsics[f_idx][cam_id] = load_txt_matrix(ext_path)
+
+        # ── 预计算所有帧所有相机的 world points（一次性 IO，后续纯内存操作）──
+        print(f'[INFO] 预加载 world points...')
+        world_pts_all = {}  # {(frame, cam_id): world_pts [N, 4]}
+        for f_idx in tqdm(all_indices, desc='预加载', leave=False):
+            for cam_id in CAM_LIST:
+                if f_idx not in cam_extrinsics or cam_id not in cam_extrinsics[f_idx]:
+                    continue
+                dm_path = os.path.join(scene_dir, 'depth_map', f'{f_idx:03d}_{cam_id}.npz')
+                if not os.path.exists(dm_path):
+                    continue
+                depth = load_depth_map(dm_path)
+                cam_pts = depth_to_camera_points(depth, cam_intrinsics[cam_id]['K_inv'])
+                world_pts = camera_to_world(cam_pts, cam_extrinsics[f_idx][cam_id])
+                world_pts_all[(f_idx, cam_id)] = world_pts
+        print(f'[INFO] 预加载完成: {len(world_pts_all)} 个帧×相机组合')
 
         scene_start = time.time()
         n_done = 0
         n_skip = 0
-        frame_indices = [f for f in all_indices if f >= START_FRAME]
+        
+        if START_FRAME > 0:
+            frame_indices = [f for f in all_indices if f >= START_FRAME]
+        else:
+            frame_indices = all_indices
+
+        cam_names = ['FRONT', 'FRONT_LEFT', 'FRONT_RIGHT', 'BACK', 'BACK_LEFT', 'BACK_RIGHT']
 
         for frame_idx in tqdm(frame_indices, desc=f"帧 {scene_name}", leave=False):
+            # 体素网格只构建一次 + 缓存补充帧过滤结果
+            voxel_grid, supp_frames, supp_filtered_cache = build_voxel_grid_for_frame(
+                frame_idx, all_indices, bbox_cache, cam_extrinsics, world_pts_all
+            )
+            if voxel_grid is None:
+                continue
+
+            # 逐相机投影（复用缓存，不重复过滤）
             for cam_id in RENDER_CAM_LIST:
                 out_path = os.path.join(out_scene_dir, f'{frame_idx:03d}_{cam_id}.npz')
                 if os.path.exists(out_path):
                     n_skip += 1
                     continue
 
-                cp = cam_params[cam_id]
-                depth_map = process_single_frame(
-                    scene_dir, frame_idx, all_indices,
-                    instances_info, frame_instances,
-                    cam_id, cp['K'], cp['H'], cp['W']
+                depth_map = project_for_camera(
+                    voxel_grid, supp_frames, frame_idx, cam_id,
+                    supp_filtered_cache, cam_intrinsics, cam_extrinsics, world_pts_all, H, W
                 )
 
-                if depth_map is None:
-                    continue
-
-                cam_names = ['FRONT', 'FRONT_LEFT', 'FRONT_RIGHT', 'BACK', 'BACK_LEFT', 'BACK_RIGHT']
                 np.savez_compressed(
                     out_path,
                     depth=depth_map,

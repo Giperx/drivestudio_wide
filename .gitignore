@@ -13,6 +13,10 @@ data/argoverse
 data/nuscenes
 data/kitti
 data/nuplan
+# CARLA syn-nuScenes: raw scenes and processed_10Hz exports
+data/syn_nuscenes/
+# loose root experiments moved out of the working tree
+local_scratch/
 vscode_debugs
 debug/
 .vscode

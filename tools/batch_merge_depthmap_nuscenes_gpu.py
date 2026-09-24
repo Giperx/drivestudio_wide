@@ -6,7 +6,7 @@ batch_merge_depthmap_nuscenes_gpu.py — GPU 加速版批量 depth map 合并 + 
 - 动态物体过滤在 GPU 上向量化（无 Python 循环）
 - 体素网格构建在 CPU（Open3D RaycastingScene，C++ 后端已足够快）
 
-用法：直接修改下方全局变量，然后 python batch_merge_depthmap_nuscenes_gpu.py
+用法：直接修改下方全局变量，然后 python tools/batch_merge_depthmap_nuscenes_gpu.py
 """
 
 import os

@@ -2,7 +2,7 @@
 DDAD数据集全面探索脚本
 直接读取DGP JSON文件和文件名，不依赖SynchronizedSceneDataset
 
-输出：DDAD_DATASET_SUMMARY.md
+输出：docs/DDAD_DATASET_SUMMARY.md
 """
 
 import json
@@ -480,7 +480,11 @@ def write_markdown(scene_infos, train, val, all_cal_data, cam_image_sizes,
     L.append('')
 
     # Write
-    output_path = '/home/test/LIVA/XZP/FeedForward/drivestudio/DDAD_DATASET_SUMMARY.md'
+    output_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'docs',
+        'DDAD_DATASET_SUMMARY.md',
+    )
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(L))
     print(f"\nReport written to: {output_path}")

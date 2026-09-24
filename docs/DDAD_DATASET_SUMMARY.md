@@ -1,6 +1,6 @@
 # DDAD 数据集探索报告
 
-> 由 `explore_ddad.py` 自动生成
+> 由 `tools/explore_ddad.py` 自动生成
 
 ---
 
@@ -273,7 +273,7 @@ DGP JSON 中的时间戳显示两种间隔，但**像素级分析证实所有场
 - 训练集: 000000-000149
 - 验证集: 000150-000199
 
-预处理后目录映射（`ddad_preprocess.py` 按顺序处理）：
+预处理后目录映射（`tools/ddad_preprocess.py` 按顺序处理）：
 
 | 原始目录 | 预处理目录 | 场景编号 |
 |----------|-----------|----------|
@@ -327,7 +327,7 @@ DDAD 数据集采集自美国和日本的多个城市（来源：[DDAD README](t
 - **SF/ANN (100帧)**: tz≈1.509-1.512 (ty≈0.248-0.255)
 - **ANN (100帧)**: tz≈1.547-1.549 (ty≈0.270-0.277)
 
-> 详细映射脚本见 `ddad_location_mapping.py`
+> 详细映射脚本见 `tools/ddad_location_mapping.py`
 
 ## 9. LiDAR 信息
 

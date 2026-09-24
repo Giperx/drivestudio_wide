@@ -56,6 +56,34 @@ OPENCV2DATASET = np.array(
     [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]]
 )
 
+
+def load_world_alignment_pose(data_path: str, start_timestep: int) -> np.ndarray:
+    """Load the pose used to put the scene origin on the first reference camera.
+
+    Official nuScenes always has camera 0. syn_nuscenes does not, so fall back
+    to the lowest camera id that was actually exported for this frame.
+    """
+    extr_dir = os.path.join(data_path, "extrinsics")
+    preferred = os.path.join(extr_dir, f"{start_timestep:03d}_0.txt")
+    if os.path.isfile(preferred):
+        return np.loadtxt(preferred)
+
+    candidates = []
+    prefix = f"{start_timestep:03d}_"
+    if os.path.isdir(extr_dir):
+        for name in os.listdir(extr_dir):
+            if not (name.startswith(prefix) and name.endswith(".txt")):
+                continue
+            cam_str = name[len(prefix):-4]
+            if cam_str.isdigit():
+                candidates.append((int(cam_str), os.path.join(extr_dir, name)))
+    if not candidates:
+        raise FileNotFoundError(
+            f"No extrinsics to align frame {start_timestep:03d} under {extr_dir}"
+        )
+    candidates.sort()
+    return np.loadtxt(candidates[0][1])
+
 # NuScenes Camera List:
 # 0: CAM_FRONT
 # 1: CAM_FRONT_LEFT
@@ -72,10 +100,8 @@ class NuScenesCameraData(CameraData):
     def load_calibrations(self):
         cam_to_worlds, intrinsics, distortions = [], [], []
         
-        # Load the first camera (front) pose to align the world
-        camera_front_start = np.loadtxt(
-            os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
-        )
+        # Load the first camera (front, or lowest exported id) pose to align the world
+        camera_front_start = load_world_alignment_pose(self.data_path, self.start_timestep)
 
         for t in range(self.start_timestep, self.end_timestep):
             # Load intrinsics
@@ -128,10 +154,8 @@ class NuScenesCameraData(CameraData):
         Returns:
             torch.Tensor: Camera-to-world matrices of shape (num_frames, 4, 4).
         """
-        # Load the first camera (front) pose to align the world
-        camera_front_start = np.loadtxt(
-            os.path.join(data_path, "extrinsics", f"{start_timestep:03d}_0.txt")
-        )
+        # Load the first camera (front, or lowest exported id) pose to align the world
+        camera_front_start = load_world_alignment_pose(data_path, start_timestep)
 
         cam_to_worlds = []
         
@@ -220,6 +244,18 @@ class NuScenesPixelSource(ScenePixelSource):
         """
         instances_info_path = os.path.join(self.data_path, "instances", "instances_info.json")
         frame_instances_path = os.path.join(self.data_path, "instances", "frame_instances.json")
+        if not (os.path.isfile(instances_info_path) and os.path.isfile(frame_instances_path)):
+            # syn_nuscenes has no 3D boxes. Keep empty tensors so static training
+            # can still call get_init_objects() and drop dynamic node types.
+            num_frames = self.end_timestep - self.start_timestep
+            logger.info("No instance annotations found; treating the scene as static.")
+            self.instances_pose = torch.zeros((num_frames, 0, 4, 4))
+            self.instances_size = torch.zeros((0, 3))
+            self.per_frame_instance_mask = torch.zeros((num_frames, 0), dtype=torch.bool)
+            self.instances_true_id = torch.zeros((0,), dtype=torch.long)
+            self.instances_model_types = torch.zeros((0,), dtype=torch.long)
+            self.smpl_human_all = {}
+            return
         with open(instances_info_path, "r") as f:
             instances_info = json.load(f)
         with open(frame_instances_path, "r") as f:
@@ -245,10 +281,8 @@ class NuScenesPixelSource(ScenePixelSource):
         instances_true_id = np.arange(num_instances)
         instances_model_types = np.ones(num_instances) * -1
         
-        # Load the first camera (front) pose to align the world
-        camera_front_start = np.loadtxt(
-            os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
-        )
+        # Load the first camera (front, or lowest exported id) pose to align the world
+        camera_front_start = load_world_alignment_pose(self.data_path, self.start_timestep)
         for k, v in instances_info.items():
             instances_model_types[int(k)] = OBJECT_CLASS_NODE_MAPPING[v["class_name"]]
             for frame_idx, obj_to_world, box_size in zip(v["frame_annotations"]["frame_idx"], v["frame_annotations"]["obj_to_world"], v["frame_annotations"]["box_size"]):
@@ -395,10 +429,8 @@ class NuScenesLiDARSource(SceneLidarSource):
     def load_calibrations(self):
         lidar_to_worlds = []
 
-        # Load the first camera (front) pose to align the world
-        camera_front_start = np.loadtxt(
-            os.path.join(self.data_path, "extrinsics", f"{self.start_timestep:03d}_0.txt")
-        )
+        # Load the first camera (front, or lowest exported id) pose to align the world
+        camera_front_start = load_world_alignment_pose(self.data_path, self.start_timestep)
 
         for pose_file in self.lidar_pose_filepaths:
             lidar_to_world = np.loadtxt(pose_file)

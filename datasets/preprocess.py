@@ -221,6 +221,18 @@ if __name__ == "__main__":
             process_id_list=scene_ids_list,
             workers=args.workers,
         )
+    elif args.dataset == "syn_nuscenes":
+        from datasets.syn_nuscenes.syn_nuscenes_preprocess import SynNuScenesProcessor
+
+        scene_ids_list = [int(scene_id) for scene_id in scene_ids_list]
+        dataset_processor = SynNuScenesProcessor(
+            load_dir=args.data_root,
+            save_dir=args.target_dir,
+            split=args.split,
+            process_keys=args.process_keys,
+            process_id_list=scene_ids_list,
+            workers=args.workers,
+        )
     elif args.dataset == "kitti":
         from datasets.kitti.kitti_preprocess import KittiProcessor
         
@@ -268,7 +280,7 @@ if __name__ == "__main__":
             workers=args.workers,
         )
     else:
-        raise ValueError(f"Unknown dataset {args.dataset}, please choose from waymo, pandaset, argoverse, nuscenes, kitti, nuplan, lyft")
+        raise ValueError(f"Unknown dataset {args.dataset}, please choose from waymo, pandaset, argoverse, nuscenes, syn_nuscenes, kitti, nuplan, lyft")
 
     if args.scene_ids is not None and args.workers == 1:
         for scene_id in args.scene_ids:

@@ -181,4 +181,28 @@ DATASETS_CONFIG = {
             "egocar_visible": False
         },
     },
+    # CARLA syn-nuScenes. Ids match the nuScenes rear slots.
+    # 2 is the wide rectified view and is not given a lidar depth map.
+    "syn_nuscenes": {
+        2: {
+            "camera_name": "CAM_BACK_WIDE_RECT_GT",
+            "original_size": (1080, 5760),
+            "egocar_visible": False
+        },
+        3: {
+            "camera_name": "CAM_BACK_LEFT_SOURCE",
+            "original_size": (1080, 1920),
+            "egocar_visible": False
+        },
+        4: {
+            "camera_name": "CAM_BACK_RIGHT_SOURCE",
+            "original_size": (1080, 1920),
+            "egocar_visible": False
+        },
+        5: {
+            "camera_name": "CAM_BACK_SOURCE",
+            "original_size": (1080, 1920),
+            "egocar_visible": True
+        },
+    },
 }
